@@ -7,6 +7,7 @@ import pytesseract
 import pyttsx3
 import threading
 import multiprocessing as mp
+from datetime import datetime
 
 # Thiết lập Tesseract OCR
 pytesseract.pytesseract.tesseract_cmd = "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
@@ -34,51 +35,35 @@ def process_frame_ocr(frame):
 
 def handle_client(client_socket, current_model):
     try:
-        i = 0
         while True:
             # Nhận lệnh từ client
+           
             command = client_socket.recv(1).decode('utf-8')
-            command = '1'
-            i += 1
-            if i > 10:
-                break
 
             if command == '1':
+                print('Start:', datetime.now())
                 # Nhận frame từ client
-                # data = b""
+                data = b""
                 payload_size = struct.calcsize("Q")
 
-                # while len(data) < payload_size:
-                #     packet = client_socket.recv(4 * 1024)
-                #     if not packet:
-                #         return
-                #     data += packet
+                while len(data) < payload_size:
+                    packet = client_socket.recv(4 * 1024)
+                    if not packet:
+                        return
+                    data += packet
 
-                # packed_msg_size = data[:payload_size]
-                # data = data[payload_size:]
-                # msg_size = struct.unpack("Q", packed_msg_size)[0]
+                packed_msg_size = data[:payload_size]
+                data = data[payload_size:]
+                msg_size = struct.unpack("Q", packed_msg_size)[0]
 
-                # while len(data) < msg_size:
-                #     data += client_socket.recv(4 * 1024)
+                while len(data) < msg_size:
+                    data += client_socket.recv(4 * 1024)
 
-                # frame_data = data[:msg_size]
-
-                # mess_size_b = client_socket.recv(payload_size)
-                # if not mess_size_b:
-                #     break
-                # mess_size = struct.unpack('Q', mess_size_b)[0]
-                # frame_data = client_socket.recv(mess_size)
-
-                # Receive size as string, decode, and convert to integer
-                message_size_str = client_socket.recv(1024).decode()
-                message_size = int(message_size_str)
-
-                # Receive data
-                frame_data = client_socket.recv(message_size)
-
+                frame_data = data[:msg_size]
                 frame = pickle.loads(frame_data)
 
                 # Hiển thị frame trên server
+                print('Show:', datetime.now())
                 cv2.imshow('Server Frame', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -88,6 +73,7 @@ def handle_client(client_socket, current_model):
                     response_text = process_frame_yolo(frame)
                 elif current_model.value == 1:
                     response_text = process_frame_ocr(frame)
+                print('Finish:', datetime.now())
                 print(f"Detected: {response_text}")
                 client_socket.send(response_text.encode('utf-8'))
             elif command == '2':
