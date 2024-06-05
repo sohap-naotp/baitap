@@ -2,20 +2,22 @@ import socket
 import cv2
 import pickle
 import struct
-import multiprocessing as mp
 from ultralytics import YOLO
 import pytesseract
 import pyttsx3
+import threading
+import multiprocessing as mp
+from datetime import datetime
 
 # Thiết lập Tesseract OCR
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Đường dẫn đến tesseract
+pytesseract.pytesseract.tesseract_cmd = "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
 
 server_ip = '192.168.1.11'
 server_port = 8888
 
 # Khởi tạo mô hình YOLOv8
 model_yolo = YOLO('yolov8n.pt')
-current_model = 'yolo'
+current_model = mp.Value('i', 0)  # 0 for YOLO, 1 for OCR
 
 # Khởi tạo pyttsx3 cho Text-to-Speech với tiếng Việt
 engine = pyttsx3.init()
@@ -31,69 +33,77 @@ def process_frame_ocr(frame):
     text = pytesseract.image_to_string(gray, lang='vie')
     return text.strip() if text else "Không phát hiện văn bản"
 
-def handle_client(client_socket, frame_queue, result_queue):
-    global current_model
+def handle_client(client_socket, current_model):
     try:
         while True:
             # Nhận lệnh từ client
+           
             command = client_socket.recv(1).decode('utf-8')
+
             if command == '1':
-                frame = frame_queue.get()
-                if frame is not None:
-                    response_text = ""
-                    if current_model == 'yolo':
-                        response_text = process_frame_yolo(frame)
-                    elif current_model == 'ocr':
-                        response_text = process_frame_ocr(frame)
-                    print(f"Detected: {response_text}")
-                    result_queue.put(response_text)
-                    client_socket.send(response_text.encode('utf-8'))
+                print('Start:', datetime.now())
+                # Nhận frame từ client
+                data = b""
+                payload_size = struct.calcsize("Q")
+
+                while len(data) < payload_size:
+                    packet = client_socket.recv(4 * 1024)
+                    if not packet:
+                        return
+                    data += packet
+
+                packed_msg_size = data[:payload_size]
+                data = data[payload_size:]
+                msg_size = struct.unpack("Q", packed_msg_size)[0]
+
+                while len(data) < msg_size:
+                    data += client_socket.recv(4 * 1024)
+
+                frame_data = data[:msg_size]
+                frame = pickle.loads(frame_data)
+
+                # Hiển thị frame trên server
+                print('Show:', datetime.now())
+                cv2.imshow('Server Frame', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+
+                response_text = ""
+                if current_model.value == 0:
+                    response_text = process_frame_yolo(frame)
+                elif current_model.value == 1:
+                    response_text = process_frame_ocr(frame)
+                print('Finish:', datetime.now())
+                print(f"Detected: {response_text}")
+                client_socket.send(response_text.encode('utf-8'))
             elif command == '2':
-                current_model = 'ocr' if current_model == 'yolo' else 'yolo'
-                print(f"Switched to {current_model}")
-                client_socket.send(f"Switched to {current_model}".encode('utf-8'))
+                with current_model.get_lock():
+                    current_model.value = 1 if current_model.value == 0 else 0
+                model_name = "OCR" if current_model.value == 1 else "YOLO"
+                print(f"Switched to {model_name}")
+                client_socket.send(f"Switched to {model_name}".encode('utf-8'))
     except Exception as e:
         print(f"Error: {e}")
     finally:
         client_socket.close()
 
-def update_frame(frame_queue):
-    # Khởi tạo camera trong hàm update_frame
-    camera = cv2.VideoCapture(0)
-    while True:
-        ret, frame = camera.read()
-        if ret:
-            frame_queue.put(frame)
-            cv2.imshow('Server Frame', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-    camera.release()
-    cv2.destroyAllWindows()
-
-def listen_socket(server_socket, frame_queue, result_queue):
+def listen_socket(server_socket, current_model):
     while True:
         client_socket, addr = server_socket.accept()
         print(f"Got connection from: {addr}")
-        handle_client(client_socket, frame_queue, result_queue)
+        client_process = mp.Process(target=handle_client, args=(client_socket, current_model))
+        client_process.start()
 
 if __name__ == '__main__':
-    # Thiết lập server socket với SO_REUSEADDR
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((server_ip, server_port))
     server_socket.listen(5)
     print(f"LISTENING AT: {server_socket.getsockname()}")
 
-    frame_queue = mp.Queue()
-    result_queue = mp.Queue()
+    current_model = mp.Value('i', 0)
+    p = mp.Process(target=listen_socket, args=(server_socket, current_model))
+    p.start()
+    p.join()
 
-    # Tạo các process
-    p1 = mp.Process(target=update_frame, args=(frame_queue,))
-    p2 = mp.Process(target=listen_socket, args=(server_socket, frame_queue, result_queue))
-
-    # Chạy các process
-    p1.start()
-    p2.start()
-
-    p1.join()
-    p2.join()
+    cv2.destroyAllWindows()
